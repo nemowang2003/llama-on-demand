@@ -14,9 +14,9 @@
       python ? pkgs.python314,
     }: let
       llama-cpp = pkgs.llama-cpp.override {inherit cudaSupport;};
-      app = python.pkgs.buildPythonApplication {
+      app = python.pkgs.buildPythonPackage {
         pname = "llama-on-demand";
-        version = "0.1.0";
+        version = "0.1.1";
         src = self;
         pyproject = true;
         build-system = [python.pkgs.uv-build];
@@ -37,10 +37,10 @@
       sdk = self.lib.mkPackage {inherit pkgs python;};
       environment = python.withPackages (ps: [sdk ps.litellm] ++ ps.litellm.optional-dependencies.proxy ++ ps.litellm.optional-dependencies.proxy-runtime);
     in
-      pkgs.writeShellScriptBin "litellm" ''
+      (pkgs.writeShellScriptBin "litellm" ''
         export LITELLM_LOCAL_MODEL_COST_MAP=True
         exec ${environment}/bin/litellm "$@"
-      '';
+      '').overrideAttrs (_: {passthru.python-env = environment;});
     packages = each-system (system: let
       pkgs = import nixpkgs {
         inherit system;
@@ -62,6 +62,11 @@
       pkgs = nixpkgs.legacyPackages.${system};
       python = pkgs.python314.withPackages (ps: [ps.fastapi ps.httpx ps.litellm]);
     in {
+      proxy-import = pkgs.runCommand "llama-on-demand-proxy-import" {} ''
+        export LITELLM_LOCAL_MODEL_COST_MAP=True
+        ${self.packages.${system}.proxy.python-env}/bin/python -c 'from llama_on_demand.litellm_callback import callback; from litellm.integrations.custom_logger import CustomLogger; assert isinstance(callback, CustomLogger)'
+        touch "$out"
+      '';
       unit = pkgs.runCommand "llama-on-demand-unit" {} ''
         export PYTHONPATH=${self}/src
         export PYTHONDONTWRITEBYTECODE=1
