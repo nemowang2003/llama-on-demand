@@ -1,0 +1,16 @@
+[project]
+name = "llama-on-demand"
+version = "0.1.0"
+description = "User service for queued, on-demand llama.cpp inference and GGUF model management"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "httpx>=0.28,<1", "uvicorn>=0.34,<1", "huggingface-hub>=0.34,<2"]
+
+[project.optional-dependencies]
+proxy = ["litellm[proxy]>=1.102.1,<2"]
+
+[project.scripts]
+llama-on-demand = "llama_on_demand:main"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12"]
+build-backend = "uv_build"
