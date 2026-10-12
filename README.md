@@ -108,3 +108,19 @@ imports the actual installed service and callback modules.
 
 `lib.runtimeOverlay { pkgs; }` supplies libsndfile for the locked soundfile
 wheel without changing its version. Checks provide a CA bundle inside the Nix sandbox.
+
+## Development checks
+
+Ruff, ty and pre-commit are dev dependencies pinned in `uv.lock`. Install the
+Git hook once per clone:
+
+```sh
+uv sync --extra proxy --locked
+uv run --locked pre-commit install
+uv run --locked pre-commit run --all-files
+```
+
+The hooks use the locked tools through uv: lock consistency, Ruff lint fixes,
+Ruff formatting, and a project-wide ty check. The ty hook also enables the `proxy` extra
+to resolve the optional LiteLLM callback. Dev dependencies are excluded from
+the deployed application environments.

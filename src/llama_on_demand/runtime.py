@@ -86,7 +86,8 @@ class Runtime:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
-        self._reader = asyncio.create_task(self._read_logs())
+        assert self.process.stdout is not None
+        self._reader = asyncio.create_task(self._read_logs(self.process.stdout))
         deadline = time.monotonic() + self.config.get("startup_timeout", 300)
         try:
             async with httpx.AsyncClient(timeout=2) as client:
@@ -108,9 +109,9 @@ class Runtime:
             await self.stop()
             raise
 
-    async def _read_logs(self) -> None:
+    async def _read_logs(self, stream: asyncio.StreamReader) -> None:
         with (self.state_dir / "llama.log").open("w") as output:
-            async for line in self.process.stdout:
+            async for line in stream:
                 text = line.decode(errors="replace")
                 output.write(text)
                 output.flush()

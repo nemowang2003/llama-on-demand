@@ -1,7 +1,6 @@
 import os
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 
 def load(path: Path | None = None) -> dict:

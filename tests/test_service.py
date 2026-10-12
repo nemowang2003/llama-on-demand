@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from fastapi import HTTPException
+
 from llama_on_demand import models
 from llama_on_demand.runtime import OFFLOAD
 from llama_on_demand.service import Scheduler, create_app
@@ -35,7 +37,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         runtime = FakeRuntime()
         scheduler = Scheduler({"queue_timeout": 0.05}, runtime)
         await scheduler.acquire()
-        with self.assertRaises(Exception) as error:
+        with self.assertRaises(HTTPException) as error:
             await scheduler.acquire()
         self.assertEqual(error.exception.status_code, 504)
         self.assertTrue(scheduler.lock.locked())
@@ -106,10 +108,9 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_failure_releases_queue(self):
         runtime = FakeRuntime()
 
-        async def fail(_):
-            raise RuntimeError("model cannot load")
-
-        runtime.start = fail
+        self.enterContext(
+            patch.object(runtime, "start", side_effect=RuntimeError("model cannot load"))
+        )
         with patch.dict(os.environ, {"LLAMA_ON_DEMAND_API_KEY": "test"}):
             app = create_app({"models": {"sakura": {}}}, runtime)
         async with httpx.AsyncClient(
@@ -136,9 +137,9 @@ class ModelTests(unittest.TestCase):
                 models.validate(model)
 
     def test_offload_log_recognizes_partial_and_full(self):
-        self.assertEqual(
-            OFFLOAD.search("load_tensors: offloaded 10/33 layers to GPU").groups(), ("10", "33")
-        )
+        match = OFFLOAD.search("load_tensors: offloaded 10/33 layers to GPU")
+        assert match is not None
+        self.assertEqual(match.groups(), ("10", "33"))
 
 
 class HeaderTests(unittest.IsolatedAsyncioTestCase):
