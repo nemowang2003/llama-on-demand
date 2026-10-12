@@ -86,3 +86,25 @@ overridden in model options because they would bypass these guarantees.
 available for debugging. `uv sync`, `uv sync --extra proxy`, `nix build .#cuda`,
 `nix build .#proxy` and `nix flake check` are supported. uv installs Python
 packages; llama-server must be provided separately, preferably with Nix.
+
+## Locked Nix builds
+
+Nix builds resolve the project's `uv.lock` with uv2nix. Python dependencies,
+including optional extras, come from that lock; nixpkgs supplies the interpreter,
+system libraries and llama.cpp where applicable. Build backend versions are
+pinned by the `pyproject-build-systems` flake input because uv does not lock them.
+
+All three build inputs (`pyproject-nix`, `uv2nix`, `pyproject-build-systems`) may
+follow a consuming flake's shared inputs. The standalone flake pins them itself.
+`lib.mkPythonSet { pkgs; python; }` exposes the locked Python package scope for
+SDK consumers; `lib.mkPackage { pkgs; python; cudaSupport; }` ships the CLI with
+its isolated environment. The CLI's `python-env` passthru exposes that environment
+for installation and runtime checks. Development shells supply Python and uv;
+use `uv sync` / `uv run` for development, and `nix build` for deployment.
+
+`lib.mkProxy { pkgs; python; }` builds the locked `proxy` extra, including LiteLLM
+and the warning callback, in one uv2nix environment. The `proxy-import` flake check
+imports the actual installed service and callback modules.
+
+`lib.runtimeOverlay { pkgs; }` supplies libsndfile for the locked soundfile
+wheel without changing its version. Checks provide a CA bundle inside the Nix sandbox.
