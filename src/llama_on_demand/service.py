@@ -134,29 +134,41 @@ def create_app(config: dict, runtime=None):
                     media_type=response.headers.get("content-type", "application/json"),
                 )
 
-            async def stream():
-                completed = False
-                try:
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
-                    completed = True
-                finally:
-                    with anyio.CancelScope(shield=True):
-                        try:
-                            await response.aclose()
-                            await client.aclose()
-                            if not completed:
-                                await runtime.stop()
-                        finally:
-                            scheduler.release()
+            completed = False
 
-            owns_lock = False
-            return StreamingResponse(
+            async def stream():
+                nonlocal completed
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+                completed = True
+
+            class InferenceResponse(StreamingResponse):
+                async def __call__(self, scope, receive, send):
+                    try:
+                        await super().__call__(scope, receive, send)
+                    finally:
+                        # Cover header sending too: the body iterator may never start.
+                        with anyio.CancelScope(shield=True):
+                            try:
+                                try:
+                                    await response.aclose()
+                                finally:
+                                    await client.aclose()
+                            finally:
+                                try:
+                                    if not completed:
+                                        await runtime.stop()
+                                finally:
+                                    scheduler.release()
+
+            streaming_response = InferenceResponse(
                 stream(),
                 status_code=response.status_code,
                 headers=headers,
                 media_type="text/event-stream",
             )
+            owns_lock = False
+            return streaming_response
         except (ValueError, RuntimeError, OSError, TimeoutError, httpx.HTTPError) as error:
             await runtime.stop()
             raise HTTPException(503, str(error)) from error

@@ -2,7 +2,10 @@
 
 import json
 import os
+import tempfile
 from pathlib import Path
+
+from filelock import FileLock
 
 
 def data_dir() -> Path:
@@ -24,12 +27,22 @@ def catalog(config: dict | None = None) -> dict[str, dict]:
 
 def save(name: str, record: dict) -> None:
     path = registry_path()
-    records = json.loads(path.read_text()) if path.exists() else {}
-    records[name] = record
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(records, indent=2) + "\n")
-    temporary.replace(path)
+    # Lock a separate, stable file: the registry inode changes on replacement.
+    with FileLock(str(path.with_suffix(".lock"))):
+        records = json.loads(path.read_text()) if path.exists() else {}
+        records[name] = record
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=path.name + ".", delete=False
+            ) as output:
+                temporary = Path(output.name)
+                output.write(json.dumps(records, indent=2) + "\n")
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 def import_model(name: str, path: Path) -> Path:

@@ -78,7 +78,11 @@ class Runtime:
                 "sleep-idle-seconds",
             }:
                 raise ValueError(f"reserved llama.cpp option: {key}")
-            command.extend([f"--{key}", str(value)])
+            if isinstance(value, bool):
+                if value:
+                    command.append(f"--{key}")
+            else:
+                command.extend([f"--{key}", str(value)])
         self.model = model
         self.process = await asyncio.create_subprocess_exec(
             *command,
@@ -110,21 +114,38 @@ class Runtime:
             raise
 
     async def _read_logs(self, stream: asyncio.StreamReader) -> None:
-        with (self.state_dir / "llama.log").open("w") as output:
-            async for line in stream:
-                text = line.decode(errors="replace")
-                output.write(text)
+        pending = b""
+        with (self.state_dir / "llama.log").open("wb") as output:
+            while chunk := await stream.read(8192):
+                output.write(chunk)
                 output.flush()
-                match = OFFLOAD.search(text)
-                if match:
-                    self.offloaded_layers, self.total_layers = map(int, match.groups())
-                    if self.offloaded_layers < self.total_layers:
-                        self.warning = (
-                            f"cpu-offload; gpu-layers={self.offloaded_layers}/{self.total_layers}"
-                        )
-                        logger.warning("Model %s uses CPU offload (%s)", self.model, self.warning)
-                if "error" in text.lower():
-                    logger.error("llama.cpp: %s", text.strip())
+                pending += chunk
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    self._inspect_log(line)
+                # Keep memory bounded even if the worker never writes a newline.
+                # The overlap preserves offload messages split across chunks.
+                if len(pending) > 8192:
+                    self._inspect_log(pending)
+                    pending = pending[-256:]
+            if pending:
+                self._inspect_log(pending)
+
+    def _inspect_log(self, line: bytes) -> None:
+        text = line.decode(errors="replace")
+        match = OFFLOAD.search(text)
+        if match:
+            layers = tuple(map(int, match.groups()))
+            if layers != (self.offloaded_layers, self.total_layers):
+                self.offloaded_layers, self.total_layers = layers
+                self.warning = None
+                if self.offloaded_layers < self.total_layers:
+                    self.warning = (
+                        f"cpu-offload; gpu-layers={self.offloaded_layers}/{self.total_layers}"
+                    )
+                    logger.warning("Model %s uses CPU offload (%s)", self.model, self.warning)
+        if "error" in text.lower():
+            logger.error("llama.cpp: %s", text.strip())
 
     @property
     def base_url(self) -> str:
@@ -139,10 +160,14 @@ class Runtime:
             except TimeoutError:
                 os.killpg(process.pid, signal.SIGKILL)
                 await process.wait()
-        if self._reader:
-            await self._reader
-        self.process = self.model = self.port = self._reader = None
-        self.warning = self.offloaded_layers = self.total_layers = None
+        try:
+            if self._reader:
+                await self._reader
+        except Exception:
+            logger.exception("Failed to read llama.cpp logs")
+        finally:
+            self.process = self.model = self.port = self._reader = None
+            self.warning = self.offloaded_layers = self.total_layers = None
 
     def status(self) -> dict:
         return {
