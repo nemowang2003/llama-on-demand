@@ -22,6 +22,7 @@
   }: let
     systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin"];
     each-system = nixpkgs.lib.genAttrs systems;
+    project = pyproject-nix.lib.project.loadPyproject {projectRoot = self;};
     workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = self;};
     overlay = workspace.mkPyprojectOverlay {sourcePreference = "wheel";};
     mk-application = pkgs: (pkgs.callPackages pyproject-nix.build.util {}).mkApplication;
@@ -34,6 +35,11 @@
       (pkgs.callPackage pyproject-nix.build.packages {inherit python;}).overrideScope (pkgs.lib.composeManyExtensions [
         pyproject-build-systems.overlays.wheel
         overlay
+        (_final: prev: {
+          llama-on-demand = prev.llama-on-demand.overrideAttrs (old: {
+            meta = (old.meta or {}) // project.renderers.meta {};
+          });
+        })
         (self.lib.runtimeOverlay {inherit pkgs;})
       ]);
     lib.mkPackage = {
@@ -56,7 +62,6 @@
           + ''
             wrapProgram "$out/bin/llama-on-demand" --set-default LLAMA_SERVER_COMMAND ${llama-cpp}/bin/llama-server ${pkgs.lib.optionalString cudaSupport "--prefix LD_LIBRARY_PATH : /run/opengl-driver/lib:/usr/lib/wsl/lib"}
           '';
-        meta.mainProgram = "llama-on-demand";
         passthru =
           (old.passthru or {})
           // {

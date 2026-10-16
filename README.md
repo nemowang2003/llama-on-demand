@@ -96,6 +96,8 @@ Nix builds resolve the project's `uv.lock` with uv2nix. Python dependencies,
 including optional extras, come from that lock; nixpkgs supplies the interpreter,
 system libraries and llama.cpp where applicable. Build backend versions are
 pinned by the `pyproject-build-systems` flake input because uv does not lock them.
+Package metadata is generated from `pyproject.toml` by pyproject-nix and inherited
+by the CLI, so descriptions and the main program do not need separate Nix definitions.
 
 All three build inputs (`pyproject-nix`, `uv2nix`, `pyproject-build-systems`) may
 follow a consuming flake's shared inputs. The standalone flake pins them itself.
