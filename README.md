@@ -68,8 +68,26 @@ llama-on-demand models inspect my-model
 
 Import validates the GGUF magic and registers the existing path without copying.
 Downloads use the standard Hugging Face cache. The user registry is stored at
-`${XDG_DATA_HOME:-~/.local/share}/llama-on-demand/models.json`; entries augment or
-override the declarative TOML catalog, and the backend reads it on each request.
+`${XDG_DATA_HOME:-~/.local/share}/llama-on-demand/models.json`. Each entry keeps
+explicit CLI definitions separate from its download cache. CLI definitions augment
+or override the declarative TOML catalog; `pull` caches only the downloaded path
+and its repo, filename and revision, so subsequent TOML option changes take effect.
+Changing any of those source fields invalidates the cached path and requires
+another `models pull`. An omitted revision is equivalent to `main`; changing the
+remote contents of `main` still requires an explicit pull to refresh the cache.
+`models add` replaces the CLI definition and clears its download cache; import
+registers an explicit local path. A CLI source override cannot inherit a path
+from a different TOML source. If the same registry entry changes during a pull,
+the downloaded file remains cached but registration is rejected to preserve the
+newer selection; rerun the pull if still needed.
+The backend checks the resolved definition on
+each request and reloads a running worker when it changes.
+
+Legacy downloaded entries are read using the current TOML definition when the
+alias is declared there; registry-only aliases retain their old definitions.
+Since legacy records did not distinguish explicit overrides from copied TOML,
+reapply any intentional CLI source overrides with `models add` and `models pull`.
+New writes use separate `definition` and `download` fields in each registry entry.
 Add the alias to the Home Manager `models` configuration to expose it through
 LiteLLM as well. Files are never automatically deleted.
 

@@ -16,22 +16,69 @@ def registry_path() -> Path:
     return data_dir() / "models.json"
 
 
-def catalog(config: dict | None = None) -> dict[str, dict]:
-    result = dict((config or {}).get("models", {}))
+def _source(record: dict) -> dict:
+    return {
+        key: record.get(key, "main" if key == "revision" else None)
+        for key in ("repo", "file", "revision")
+    }
+
+
+def _entry(record: dict, declarative: dict | None = None) -> dict:
+    if "definition" in record:
+        return record
+    # Older pulls saved a merged definition alongside the downloaded path.
+    # Its provenance is unknown: prefer TOML for declarative aliases, retaining
+    # the old definition for aliases that exist only in the user registry.
+    if record.get("path") and record.get("repo") and record.get("file"):
+        return {
+            "definition": {}
+            if declarative is not None
+            else {k: v for k, v in record.items() if k != "path"},
+            "download": {"source": _source(record), "path": record["path"]},
+        }
+    return {"definition": record}
+
+
+def _read_registry() -> dict:
     path = registry_path()
-    if path.exists():
-        for name, record in json.loads(path.read_text()).items():
-            result[name] = {**result.get(name, {}), **record}
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _catalog(config: dict | None, records: dict) -> dict[str, dict]:
+    declared = (config or {}).get("models", {})
+    result = {name: dict(record) for name, record in declared.items()}
+    for name, raw in records.items():
+        entry = _entry(raw, declared.get(name))
+        definition = entry["definition"]
+        if name not in declared and not definition:
+            continue
+        base = result.get(name, {})
+        record = {**base, **definition}
+        if "path" not in definition and _source(record) != _source(base):
+            # A CLI source override cannot inherit weights from the TOML source.
+            record.pop("path", None)
+        download = entry.get("download")
+        if download and record.get("repo") and record.get("file"):
+            if download["source"] == _source(record):
+                record["path"] = download["path"]
+            else:
+                # Do not fall back to an old configured path after the source changes.
+                record.pop("path", None)
+        result[name] = record
     return result
 
 
-def save(name: str, record: dict) -> None:
+def catalog(config: dict | None = None) -> dict[str, dict]:
+    return _catalog(config, _read_registry())
+
+
+def _update(name: str, update) -> None:
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Lock a separate, stable file: the registry inode changes on replacement.
     with FileLock(str(path.with_suffix(".lock"))):
-        records = json.loads(path.read_text()) if path.exists() else {}
-        records[name] = record
+        records = _read_registry()
+        records[name] = update(records.get(name, {}))
         temporary = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -43,6 +90,10 @@ def save(name: str, record: dict) -> None:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+
+def save(name: str, record: dict) -> None:
+    _update(name, lambda previous: {"definition": record})
 
 
 def import_model(name: str, path: Path) -> Path:
@@ -61,7 +112,9 @@ def validate(path: Path) -> None:
 
 
 def pull(name: str, config: dict) -> Path:
-    record = catalog(config)[name]
+    records = _read_registry()
+    previous_entry = records.get(name, {})
+    record = _catalog(config, records)[name]
     from huggingface_hub import hf_hub_download
 
     path = Path(
@@ -70,7 +123,19 @@ def pull(name: str, config: dict) -> Path:
         )
     )
     validate(path)
-    save(name, {**record, "path": str(path)})
+    declared = config.get("models", {})
+
+    def publish(previous):
+        if previous != previous_entry:
+            raise RuntimeError(
+                f"model {name} changed while downloading; registry unchanged; rerun models pull {name} if needed"
+            )
+        return {
+            "definition": _entry(previous, declared.get(name))["definition"],
+            "download": {"source": _source(record), "path": str(path)},
+        }
+
+    _update(name, publish)
     return path
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import multiprocessing
 import os
 import sys
@@ -79,6 +80,157 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(set(models.catalog()), {"original", "new"})
 
 
+class DownloadCacheTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.registry = root / "models.json"
+        self.enterContext(patch("llama_on_demand.models.registry_path", return_value=self.registry))
+        self.weights = root / "model.gguf"
+        self.weights.write_bytes(b"GGUFtest")
+        self.download = self.enterContext(
+            patch("huggingface_hub.hf_hub_download", return_value=str(self.weights))
+        )
+        self.definition = {
+            "repo": "owner/model",
+            "file": "model.gguf",
+            "options": {"ctx-size": 4096},
+        }
+        self.config = {"models": {"m": self.definition}}
+
+    def test_pull_keeps_options_declarative_and_caches_only_download_identity(self):
+        models.pull("m", self.config)
+        saved = json.loads(self.registry.read_text())["m"]
+        self.assertEqual(saved["definition"], {})
+        self.assertNotIn("options", saved["download"])
+        self.definition["options"] = {"ctx-size": 8192}
+        path, record = models.model_path("m", self.config)
+        self.assertEqual(path, self.weights)
+        self.assertEqual(record["options"], {"ctx-size": 8192})
+        self.assertNotIn("path", self.definition)
+
+    def test_each_source_change_requires_pull_and_downloads_from_the_new_source(self):
+        for field, new_value in (
+            ("repo", "owner/new"),
+            ("file", "new.gguf"),
+            ("revision", "abc123"),
+        ):
+            with self.subTest(field=field):
+                self.registry.unlink(missing_ok=True)
+                definition = {**self.definition, "path": "/old/configured.gguf"}
+                config = {"models": {"m": definition}}
+                models.pull("m", config)
+                definition[field] = new_value
+                with self.assertRaisesRegex(ValueError, "models pull m"):
+                    models.model_path("m", config)
+                models.pull("m", config)
+                self.download.assert_called_with(
+                    repo_id=definition["repo"],
+                    filename=definition["file"],
+                    revision=definition.get("revision", "main"),
+                )
+                self.assertEqual(models.model_path("m", config)[0], self.weights)
+
+    def test_default_revision_matches_explicit_main(self):
+        models.pull("m", self.config)
+        self.definition["revision"] = "main"
+        self.assertEqual(models.model_path("m", self.config)[0], self.weights)
+
+    def test_cli_definitions_override_toml_and_survive_pull(self):
+        override = {"repo": "owner/override", "file": "override.gguf", "revision": "commit"}
+        models.save("m", override)
+        models.pull("m", self.config)
+        self.assertEqual(
+            models.catalog(self.config)["m"],
+            {**override, "options": self.definition["options"], "path": str(self.weights)},
+        )
+        self.assertEqual(models.catalog()["m"], {**override, "path": str(self.weights)})
+        self.assertEqual(json.loads(self.registry.read_text())["m"]["definition"], override)
+
+    def test_import_replaces_download_cache_with_explicit_path(self):
+        models.pull("m", self.config)
+        models.import_model("m", self.weights)
+        self.definition["repo"] = "owner/new"
+        self.assertEqual(models.model_path("m", self.config)[0], self.weights)
+
+    def test_cli_source_change_cannot_inherit_toml_weights(self):
+        self.definition["path"] = str(self.weights)
+        for field, value in (("repo", "owner/new"), ("file", "new.gguf"), ("revision", "commit")):
+            with self.subTest(field=field):
+                models.save("m", {field: value})
+                with self.assertRaisesRegex(ValueError, "models pull m"):
+                    models.model_path("m", self.config)
+                models.pull("m", self.config)
+                self.assertEqual(models.model_path("m", self.config)[0], self.weights)
+        models.import_model("m", self.weights)
+        self.assertEqual(models.model_path("m", self.config)[0], self.weights)
+
+    def test_import_during_download_preserves_the_newer_selection(self):
+        imported = self.weights.with_name("imported.gguf")
+        imported.write_bytes(b"GGUFimported")
+
+        def concurrent_import(**kwargs):
+            models.import_model("m", imported)
+            return str(self.weights)
+
+        self.download.side_effect = concurrent_import
+        with self.assertRaisesRegex(RuntimeError, "changed while downloading"):
+            models.pull("m", self.config)
+        self.assertEqual(models.model_path("m", self.config)[0], imported)
+        self.assertNotIn("download", json.loads(self.registry.read_text())["m"])
+
+    def test_removed_declarative_alias_is_not_resurrected_by_download_cache(self):
+        models.pull("m", self.config)
+        self.assertNotIn("m", models.catalog())
+
+    def test_switching_to_a_local_toml_path_does_not_require_download(self):
+        models.pull("m", self.config)
+        local = self.weights.with_name("local.gguf")
+        local.write_bytes(b"GGUFtest")
+        self.config["models"]["m"] = {"path": str(local)}
+        self.assertEqual(models.model_path("m", self.config)[0], local)
+
+    def test_legacy_snapshot_uses_current_toml_and_is_upgraded_on_pull(self):
+        self.registry.write_text(json.dumps({"m": {**self.definition, "path": str(self.weights)}}))
+        self.definition["options"] = {"ctx-size": 8192}
+        self.assertEqual(models.model_path("m", self.config)[1]["options"], {"ctx-size": 8192})
+        self.definition["repo"] = "owner/new"
+        with self.assertRaisesRegex(ValueError, "models pull m"):
+            models.model_path("m", self.config)
+        models.pull("m", self.config)
+        self.download.assert_called_with(
+            repo_id="owner/new", filename="model.gguf", revision="main"
+        )
+        self.assertEqual(json.loads(self.registry.read_text())["m"]["definition"], {})
+
+    def test_legacy_registry_only_model_keeps_its_definition(self):
+        self.registry.write_text(json.dumps({"m": {**self.definition, "path": str(self.weights)}}))
+        self.assertEqual(models.model_path("m", {})[0], self.weights)
+        models.pull("m", {})
+        self.assertEqual(json.loads(self.registry.read_text())["m"]["definition"], self.definition)
+
+    def test_failed_download_preserves_previous_cache(self):
+        models.pull("m", self.config)
+        previous = self.registry.read_bytes()
+        self.download.side_effect = OSError("offline")
+        with self.assertRaises(OSError):
+            models.pull("m", self.config)
+        self.assertEqual(self.registry.read_bytes(), previous)
+
+    def test_definition_changed_during_download_is_not_overwritten(self):
+        models.save("m", self.definition)
+
+        def concurrent_edit(**kwargs):
+            models.save("m", {**self.definition, "repo": "owner/new"})
+            return str(self.weights)
+
+        self.download.side_effect = concurrent_edit
+        with self.assertRaisesRegex(RuntimeError, "changed while downloading"):
+            models.pull("m", self.config)
+        self.assertEqual(models.catalog(self.config)["m"]["repo"], "owner/new")
+        with self.assertRaisesRegex(ValueError, "models pull m"):
+            models.model_path("m", self.config)
+
+
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_long_logs_preserve_bytes_and_detect_split_offload_message(self):
         with tempfile.TemporaryDirectory() as root:
@@ -145,6 +297,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 await runtime.start("new")
+                await runtime.start("new")
+                spawn.assert_awaited_once()
             await runtime._reader
             command = spawn.call_args.args
             self.assertIn("--embedding", command)
@@ -160,6 +314,29 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_boolean_options_are_flags_and_false_is_omitted(self):
         await self.check_options(Runtime({}))
+
+    async def test_same_alias_reloads_when_model_definition_changes(self):
+        runtime = Runtime({})
+        runtime.model = "new"
+        runtime._loaded_spec = (Path("old.gguf"), {"options": {"ctx-size": 1024}})
+        with (
+            patch.object(runtime, "process", SimpleNamespace(returncode=None)),
+            patch.object(runtime, "stop", new_callable=AsyncMock) as stop,
+        ):
+            await self.check_options(runtime)
+        self.assertEqual(stop.await_count, 2)
+
+    async def test_same_alias_revalidates_source_before_reusing_worker(self):
+        runtime = Runtime({})
+        runtime.model = "m"
+        with (
+            patch.object(runtime, "process", SimpleNamespace(returncode=None)),
+            patch(
+                "llama_on_demand.runtime.model_path", side_effect=ValueError("run models pull m")
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "models pull m"):
+                await runtime.start("m")
 
     async def test_gpu_layer_options_warn_and_allow_start_with_automatic_fitting(self):
         options = {"gpu_layers": 0, "gpu-layers": 8, "n_gpu_layers": 16, "n-gpu-layers": 32}

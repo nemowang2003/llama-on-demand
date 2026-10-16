@@ -31,12 +31,18 @@ class Runtime:
             Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "llama-on-demand"
         )
         self._reader = None
+        self._loaded_spec = None
 
     async def start(self, model: str) -> None:
-        if self.process and self.process.returncode is None and self.model == model:
+        path, record = model_path(model, self.config)
+        if (
+            self.process
+            and self.process.returncode is None
+            and self.model == model
+            and self._loaded_spec == (path, record)
+        ):
             return
         await self.stop()
-        path, record = model_path(model, self.config)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
@@ -110,6 +116,7 @@ class Runtime:
                     try:
                         response = await client.get(f"{self.base_url}/health")
                         if response.status_code == 200:
+                            self._loaded_spec = (path, record)
                             self.last_used = time.monotonic()
                             return
                     except httpx.HTTPError:
@@ -175,6 +182,7 @@ class Runtime:
         finally:
             self.process = self.model = self.port = self._reader = None
             self.warning = self.offloaded_layers = self.total_layers = None
+            self._loaded_spec = None
 
     def status(self) -> dict:
         return {
