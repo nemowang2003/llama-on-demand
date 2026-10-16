@@ -71,7 +71,7 @@
         postFixup =
           (old.postFixup or "")
           + ''
-            wrapProgram "$out/bin/llama-on-demand" --set-default LLAMA_SERVER_COMMAND ${llama-cpp}/bin/llama-server ${pkgs.lib.optionalString cudaSupport "--prefix LD_LIBRARY_PATH : /run/opengl-driver/lib:/usr/lib/wsl/lib"}
+            wrapProgram "$out/bin/llama-on-demand" --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.aria2]} --set-default LLAMA_SERVER_COMMAND ${llama-cpp}/bin/llama-server ${pkgs.lib.optionalString cudaSupport "--prefix LD_LIBRARY_PATH : /run/opengl-driver/lib:/usr/lib/wsl/lib"}
           '';
         passthru =
           (old.passthru or {})
@@ -118,7 +118,7 @@
         ${environment}/bin/python -c 'from llama_on_demand.litellm_callback import callback; from litellm.integrations.custom_logger import CustomLogger; assert isinstance(callback, CustomLogger); import litellm.proxy.proxy_server'
         touch "$out"
       '';
-      unit = pkgs.runCommand "llama-on-demand-unit" {} ''
+      unit = pkgs.runCommand "llama-on-demand-unit" {nativeBuildInputs = [pkgs.aria2];} ''
         export PYTHONDONTWRITEBYTECODE=1
         export LITELLM_LOCAL_MODEL_COST_MAP=True
         export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
@@ -245,7 +245,7 @@
         };
       };
     };
-    devShells = each-system (system: let pkgs = nixpkgs.legacyPackages.${system}; in {default = pkgs.mkShell {packages = [pkgs.uv pkgs.python314];};});
+    devShells = each-system (system: let pkgs = nixpkgs.legacyPackages.${system}; in {default = pkgs.mkShell {packages = [pkgs.uv pkgs.python314 pkgs.aria2];};});
     formatter = each-system (system: nixpkgs.legacyPackages.${system}.alejandra);
   };
 }

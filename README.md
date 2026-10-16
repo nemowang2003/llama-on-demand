@@ -67,7 +67,17 @@ llama-on-demand models inspect my-model
 ```
 
 Import validates the GGUF magic and registers the existing path without copying.
-Downloads use the standard Hugging Face cache. The user registry is stored at
+`models pull` resolves the file version and download URL through Hugging Face,
+then uses aria2c with up to 16 connections, retries and resumable partial files.
+Rerun the same command after an interruption to resume. The file size, content
+hash and GGUF magic are checked before updating the registry; aria2 transfers
+are verified before publishing to the standard Hugging Face cache.
+A failed download leaves the previous registered
+model intact. Nix packages include aria2c; uv users must provide it on PATH.
+Cached weights are verified and reused without starting aria2c.
+Signed CDN URLs work with private repositories too. Authenticated files served
+directly by the Hub use its client to avoid forwarding tokens through aria2 redirects.
+The user registry is stored at
 `${XDG_DATA_HOME:-~/.local/share}/llama-on-demand/models.json`. Each entry keeps
 explicit CLI definitions separate from its download cache. CLI definitions augment
 or override the declarative TOML catalog; `pull` caches only the downloaded path
@@ -108,7 +118,7 @@ take values, use strings or numbers, such as `flash-attn = "on"` or `ctx-size = 
 `llama-on-demand serve` is the foreground entrypoint used by systemd. It is also
 available for debugging. `uv sync`, `uv sync --extra proxy`, `nix build .#cuda`,
 `nix build .#proxy` and `nix flake check` are supported. uv installs Python
-packages; llama-server must be provided separately, preferably with Nix.
+packages; llama-server and aria2c must be provided separately, preferably with Nix.
 
 ## Locked Nix builds
 

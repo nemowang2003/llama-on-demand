@@ -115,10 +115,10 @@ def pull(name: str, config: dict) -> Path:
     records = _read_registry()
     previous_entry = records.get(name, {})
     record = _catalog(config, records)[name]
-    from huggingface_hub import hf_hub_download
+    from .download import download_file
 
     path = Path(
-        hf_hub_download(
+        download_file(
             repo_id=record["repo"], filename=record["file"], revision=record.get("revision", "main")
         )
     )

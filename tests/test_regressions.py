@@ -88,7 +88,7 @@ class DownloadCacheTests(unittest.TestCase):
         self.weights = root / "model.gguf"
         self.weights.write_bytes(b"GGUFtest")
         self.download = self.enterContext(
-            patch("huggingface_hub.hf_hub_download", return_value=str(self.weights))
+            patch("llama_on_demand.download.download_file", return_value=str(self.weights))
         )
         self.definition = {
             "repo": "owner/model",
