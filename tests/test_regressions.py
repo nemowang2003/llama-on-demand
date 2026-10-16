@@ -113,7 +113,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await runtime.stop()
         await self.check_options(runtime)
 
-    async def check_options(self, runtime):
+    async def check_options(self, runtime, extra_options=None):
         stream = asyncio.StreamReader()
         stream.feed_eof()
         process = SimpleNamespace(returncode=None, stdout=stream)
@@ -128,7 +128,14 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "llama_on_demand.runtime.model_path",
                     return_value=(
                         Path("model.gguf"),
-                        {"options": {"embedding": True, "mlock": False, "ctx-size": 4096}},
+                        {
+                            "options": {
+                                "embedding": True,
+                                "mlock": False,
+                                "ctx-size": 4096,
+                                **(extra_options or {}),
+                            }
+                        },
                     ),
                 ),
                 patch("llama_on_demand.runtime.asyncio.create_subprocess_exec", spawn),
@@ -145,12 +152,22 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("False", command)
             self.assertNotIn("--mlock", command)
             self.assertEqual(command[command.index("--ctx-size") + 1], "4096")
+            for key in extra_options or {}:
+                self.assertNotIn(f"--{key}", command)
             self.assertEqual(runtime.model, "new")
             runtime.process = None
             await runtime.stop()
 
     async def test_boolean_options_are_flags_and_false_is_omitted(self):
         await self.check_options(Runtime({}))
+
+    async def test_gpu_layer_options_warn_and_allow_start_with_automatic_fitting(self):
+        options = {"gpu_layers": 0, "gpu-layers": 8, "n_gpu_layers": 16, "n-gpu-layers": 32}
+        with self.assertLogs("llama_on_demand.runtime", level="WARNING") as logs:
+            await self.check_options(Runtime({}), options)
+        self.assertEqual(len(logs.output), len(options))
+        for key in options:
+            self.assertTrue(any(f"option {key}=" in entry for entry in logs.output))
 
 
 class StreamingFailureTests(unittest.IsolatedAsyncioTestCase):

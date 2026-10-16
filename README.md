@@ -79,8 +79,10 @@ Runtime settings: `idle_seconds` (30), `fit_target_mib` (1024),
 and shared across models, held until an entire response finishes. A disconnected
 stream kills its worker before admitting the next request. Overflow returns 503;
 queue timeout returns 504. These limits make resource exhaustion explicit.
-Reserved llama.cpp options, including GPU layer count and parallelism, cannot be
-overridden in model options because they would bypass these guarantees.
+GPU layer options (`gpu-layers`, `n-gpu-layers`, and their underscore spellings)
+are ignored with a log warning so automatic fitting remains in control.
+Other reserved llama.cpp options, including parallelism, cannot be overridden
+in model options because they would bypass these guarantees.
 Boolean model options enable a command-line switch when `true` and omit it when
 `false` (for example, `embedding = true` adds `--embedding`). For options that
 take values, use strings or numbers, such as `flash-attn = "on"` or `ctx-size = 4096`.

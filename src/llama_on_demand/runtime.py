@@ -66,15 +66,22 @@ class Runtime:
         # Do not set gpu-layers: llama.cpp must fit it to currently free VRAM.
         options = record.get("options", {})
         for key, value in options.items():
-            if key in {
+            normalized_key = key.replace("_", "-")
+            if normalized_key in {"gpu-layers", "n-gpu-layers"}:
+                logger.warning(
+                    "Ignoring model %s option %s=%s; GPU layers are managed by automatic fitting",
+                    model,
+                    key,
+                    value,
+                )
+                continue
+            if normalized_key in {
                 "model",
                 "alias",
                 "host",
                 "port",
                 "parallel",
                 "fit",
-                "gpu-layers",
-                "n-gpu-layers",
                 "sleep-idle-seconds",
             }:
                 raise ValueError(f"reserved llama.cpp option: {key}")
