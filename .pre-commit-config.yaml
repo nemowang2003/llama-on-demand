@@ -17,9 +17,9 @@ repos:
         language: system
         entry: uv run --locked ruff format
         types: [python]
+
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.88
+    hooks:
       - id: ty
-        name: ty
-        language: system
-        entry: uv run --locked --extra proxy ty check
-        types: [python]
-        pass_filenames: false
+        args: [--locked, --extra, proxy]

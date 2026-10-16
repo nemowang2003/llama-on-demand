@@ -155,7 +155,8 @@ uv run --locked pre-commit install
 uv run --locked pre-commit run --all-files
 ```
 
-The hooks use the locked tools through uv: lock consistency, Ruff lint fixes,
-Ruff formatting, and a project-wide ty check. The ty hook also enables the `proxy` extra
+The local hooks use the locked tools through uv for lock consistency, Ruff lint
+fixes, and Ruff formatting. The official `astral-sh/ty-pre-commit` hook pins ty
+separately and checks the whole project with locked project dependencies. The ty hook also enables the `proxy` extra
 to resolve the optional LiteLLM callback. Dev dependencies are excluded from
 the deployed application environments.
