@@ -1,4 +1,4 @@
-"""Local OpenAI-compatible backend with a global FIFO admission lock."""
+"""Local OpenAI/Anthropic-compatible API with a global FIFO admission lock."""
 
 import asyncio
 import hmac
@@ -9,10 +9,22 @@ from contextlib import asynccontextmanager, suppress
 import anyio
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .models import catalog
 from .runtime import Runtime
+
+INFERENCE_ENDPOINTS = {
+    "chat/completions",
+    "completions",
+    "embeddings",
+    "responses",
+    "responses/input_tokens",
+    "messages",
+    "messages/count_tokens",
+}
+STREAMING_ENDPOINTS = {"chat/completions", "completions", "responses", "messages"}
 
 
 class Scheduler:
@@ -68,8 +80,34 @@ def create_app(config: dict, runtime=None):
     app.state.scheduler = scheduler
     app.state.runtime = runtime
 
+    @app.exception_handler(StarletteHTTPException)
+    async def api_error(request: Request, error: StarletteHTTPException):
+        if request.url.path.startswith("/v1/messages"):
+            kind = {
+                400: "invalid_request_error",
+                401: "authentication_error",
+                403: "permission_error",
+                404: "not_found_error",
+                413: "request_too_large",
+                429: "rate_limit_error",
+                503: "overloaded_error",
+            }.get(error.status_code, "api_error")
+            content = {"type": "error", "error": {"type": kind, "message": str(error.detail)}}
+        elif request.url.path.startswith("/v1/"):
+            kind = "server_error" if error.status_code >= 500 else "invalid_request_error"
+            content = {
+                "error": {"message": str(error.detail), "type": kind, "param": None, "code": None}
+            }
+        else:
+            content = {"detail": error.detail}
+        return JSONResponse(content, status_code=error.status_code, headers=error.headers)
+
     def authorize(request):
-        if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {key}"):
+        bearer = hmac.compare_digest(
+            request.headers.get("authorization", "").encode(), f"Bearer {key}".encode()
+        )
+        api_key = hmac.compare_digest(request.headers.get("x-api-key", "").encode(), key.encode())
+        if not (bearer or api_key):
             raise HTTPException(401, "invalid API key")
 
     @app.get("/health")
@@ -95,7 +133,7 @@ def create_app(config: dict, runtime=None):
     @app.post("/v1/{endpoint:path}")
     async def infer(endpoint: str, request: Request):
         authorize(request)
-        if endpoint not in ("chat/completions", "completions", "embeddings"):
+        if endpoint not in INFERENCE_ENDPOINTS:
             raise HTTPException(404, "unsupported inference endpoint")
         try:
             payload = await request.json()
@@ -118,13 +156,24 @@ def create_app(config: dict, runtime=None):
                 timeout=httpx.Timeout(config.get("request_timeout", 3600), connect=10),
             )
             upstream = client.build_request(
-                "POST", f"{runtime.base_url}/v1/{endpoint}", json=payload
+                "POST",
+                f"{runtime.base_url}/v1/{endpoint}",
+                json=payload,
+                headers={
+                    name: request.headers[name]
+                    for name in ("anthropic-version", "anthropic-beta")
+                    if name in request.headers
+                },
             )
             response = await client.send(upstream, stream=True)
             headers = {}
             if runtime.warning:
                 headers["x-local-llm-warning"] = runtime.warning
-            if response.status_code >= 400 or not payload.get("stream"):
+            if (
+                response.status_code >= 400
+                or not payload.get("stream")
+                or endpoint not in STREAMING_ENDPOINTS
+            ):
                 body = await response.aread()
                 from fastapi.responses import Response
 

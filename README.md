@@ -1,6 +1,6 @@
 # llama-on-demand
 
-An OpenAI-compatible user service for local GGUF models. Clients connect directly
+An OpenAI/Anthropic-compatible user service for local GGUF models. Clients connect directly
 and choose any registered model by name. A single llama.cpp worker is loaded on
 demand; requests across all models share a FIFO queue. Switching models stops
 the old process and loads the requested weights. After 30 idle seconds the worker
@@ -16,6 +16,64 @@ GPU offloading to currently available VRAM, reserving 1024 MiB by default. CPU
 offload is reported in logs, status and the non-fatal HTTP response header
 `x-local-llm-warning: cpu-offload; gpu-layers=N/T`, including streaming responses.
 Loading failures return an actionable error and release the queue.
+
+## API formats
+
+All formats are available on the same listener, share the same registered model
+aliases and FIFO queue, and use the same `LLAMA_ON_DEMAND_API_KEY`:
+
+| Format | Endpoint | Authentication |
+| --- | --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` | `Authorization: Bearer KEY` |
+| OpenAI Responses | `POST /v1/responses` | `Authorization: Bearer KEY` |
+| Anthropic Messages | `POST /v1/messages` | `x-api-key: KEY` or Bearer |
+| OpenAI text Completions | `POST /v1/completions` | Bearer |
+| OpenAI embeddings | `POST /v1/embeddings` | Bearer |
+| Responses input token count | `POST /v1/responses/input_tokens` | Bearer |
+| Anthropic token count | `POST /v1/messages/count_tokens` | `x-api-key: KEY` or Bearer |
+
+The gateway accepts either authentication header. OpenAI SDK clients should use
+`http://HOST:PORT/v1` as their base URL; Anthropic SDK clients should use
+`http://HOST:PORT` (the SDK adds `/v1/messages`). With a reverse proxy mounting the
+service at `/llm/`, these become `http://HOST/llm/v1` and `http://HOST/llm`.
+
+For a TCP deployment, for example:
+
+```sh
+base=$(llama-on-demand endpoint)
+
+curl "$base/v1/chat/completions" \
+  -H "Authorization: Bearer $LLAMA_ON_DEMAND_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"sakura","messages":[{"role":"user","content":"Hello"}]}'
+
+curl "$base/v1/responses" \
+  -H "Authorization: Bearer $LLAMA_ON_DEMAND_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"sakura","input":"Hello"}'
+
+curl "$base/v1/messages" \
+  -H "x-api-key: $LLAMA_ON_DEMAND_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"sakura","max_tokens":128,"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Add `"stream": true` and use `curl -N` for streaming generation. Requests, JSON
+responses and SSE event names/data are passed through to llama.cpp's native
+implementations; `anthropic-version` and `anthropic-beta` headers are forwarded.
+Token counting also uses the model worker, so it may load weights and waits in
+the same queue. Gateway-generated `/v1/` errors use an OpenAI error envelope, or
+an Anthropic error envelope for `/v1/messages` and its subpaths. Worker errors
+retain their original body and status.
+
+Compatibility is limited to the packaged llama.cpp's implementation, rather
+than the full hosted APIs. In particular, Responses does not support
+`previous_response_id`; send the conversation history in `input`. Stored-response
+retrieval/deletion and other unlisted endpoints are not provided. Tool use needs
+a suitable model and chat template; set the model's `options.jinja = true` for
+llama.cpp's documented Anthropic tool support. See the
+[llama.cpp server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 
 ## Home Manager user service
 
