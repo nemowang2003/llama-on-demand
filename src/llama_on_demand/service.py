@@ -114,7 +114,8 @@ def create_app(config: dict, runtime=None):
                 raise HTTPException(499, "client disconnected while queued")
             await runtime.start(model)
             client = httpx.AsyncClient(
-                timeout=httpx.Timeout(config.get("request_timeout", 3600), connect=10)
+                transport=httpx.AsyncHTTPTransport(uds=str(runtime.socket_path)),
+                timeout=httpx.Timeout(config.get("request_timeout", 3600), connect=10),
             )
             upstream = client.build_request(
                 "POST", f"{runtime.base_url}/v1/{endpoint}", json=payload

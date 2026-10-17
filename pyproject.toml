@@ -11,9 +11,6 @@ dependencies = [
     "filelock>=3.20,<4",
 ]
 
-[project.optional-dependencies]
-proxy = ["litellm[proxy]>=1.102.1,<2"]
-
 [project.scripts]
 llama-on-demand = "llama_on_demand:main"
 

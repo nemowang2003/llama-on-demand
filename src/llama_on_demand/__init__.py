@@ -17,10 +17,18 @@ def main():
     parser.add_argument("--config", type=Path)
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve")
-    server.add_argument("--port", type=int, default=4001)
-    server.add_argument("--host", default="127.0.0.1")
+    listen = server.add_mutually_exclusive_group()
+    listen.add_argument("--port", type=int, default=0, help="TCP port; 0 lets the OS allocate it")
+    listen.add_argument("--uds", type=Path, help="Unix socket path (permissions 0600)")
+    server.add_argument("--host")
+    server.add_argument("--endpoint-file", type=Path)
     status = commands.add_parser("status")
-    status.add_argument("--url", default="http://127.0.0.1:4001")
+    target = status.add_mutually_exclusive_group()
+    target.add_argument("--url")
+    target.add_argument("--uds", type=Path, help="Query the service through a Unix socket")
+    status.add_argument("--endpoint-file", type=Path)
+    endpoint = commands.add_parser("endpoint", help="Print the running service's endpoint")
+    endpoint.add_argument("--endpoint-file", type=Path)
     catalog = commands.add_parser("models").add_subparsers(dest="model_command", required=True)
     catalog.add_parser("list")
     for command in ("pull", "inspect"):
@@ -35,22 +43,44 @@ def main():
     add.add_argument("file")
     add.add_argument("--revision", default="main")
     args = parser.parse_args()
+    if args.command == "serve" and args.uds and args.host:
+        parser.error("--uds cannot be combined with --host")
     config = load(args.config)
     try:
         if args.command == "serve":
-            import uvicorn
-
+            from .server import serve
             from .service import create_app
 
             logging.basicConfig(level=logging.INFO)
-            uvicorn.run(create_app(config), host=args.host, port=args.port, workers=1)
+            serve(
+                create_app(config),
+                host=args.host or "127.0.0.1",
+                port=args.port,
+                uds=args.uds,
+                endpoint_file=args.endpoint_file,
+            )
+        elif args.command == "endpoint":
+            from .server import read_endpoint
+
+            print(read_endpoint(args.endpoint_file))
         elif args.command == "status":
             import httpx
 
-            result = httpx.get(
-                args.url + "/status",
-                headers={"Authorization": "Bearer " + os.environ["LLAMA_ON_DEMAND_API_KEY"]},
+            from .server import read_endpoint
+
+            endpoint = args.url or (
+                f"unix://{args.uds.expanduser()}" if args.uds else read_endpoint(args.endpoint_file)
             )
+            if endpoint.startswith("unix://"):
+                transport = httpx.HTTPTransport(uds=endpoint.removeprefix("unix://"))
+                url = "http://localhost"
+            else:
+                transport, url = None, endpoint
+            with httpx.Client(transport=transport, trust_env=False) as client:
+                result = client.get(
+                    url.rstrip("/") + "/status",
+                    headers={"Authorization": "Bearer " + os.environ["LLAMA_ON_DEMAND_API_KEY"]},
+                )
             result.raise_for_status()
             print(json.dumps(result.json(), indent=2))
         elif args.model_command == "list":

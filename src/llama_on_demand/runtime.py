@@ -5,13 +5,14 @@ import logging
 import os
 import re
 import signal
-import socket
+import tempfile
 import time
 from pathlib import Path
 
 import httpx
 
 from .models import model_path
+from .server import runtime_dir
 
 logger = logging.getLogger(__name__)
 OFFLOAD = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
@@ -22,7 +23,8 @@ class Runtime:
         self.config = config
         self.process = None
         self.model = None
-        self.port = None
+        self.socket_path = None
+        self._socket_dir = None
         self.warning = None
         self.offloaded_layers = None
         self.total_layers = None
@@ -43,71 +45,73 @@ class Runtime:
         ):
             return
         await self.stop()
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            self.port = sock.getsockname()[1]
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        command = [
-            self.config.get(
-                "server_command", os.environ.get("LLAMA_SERVER_COMMAND", "llama-server")
-            ),
-            "--model",
-            str(path),
-            "--alias",
-            model,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(self.port),
-            "--parallel",
-            "1",
-            "--fit",
-            "on",
-            "--fit-target",
-            str(self.config.get("fit_target_mib", 1024)),
-            "--no-ui",
-            "--verbosity",
-            "4",
-        ]
-        # Do not set gpu-layers: llama.cpp must fit it to currently free VRAM.
-        options = record.get("options", {})
-        for key, value in options.items():
-            normalized_key = key.replace("_", "-")
-            if normalized_key in {"gpu-layers", "n-gpu-layers"}:
-                logger.warning(
-                    "Ignoring model %s option %s=%s; GPU layers are managed by automatic fitting",
-                    model,
-                    key,
-                    value,
-                )
-                continue
-            if normalized_key in {
-                "model",
-                "alias",
-                "host",
-                "port",
-                "parallel",
-                "fit",
-                "sleep-idle-seconds",
-            }:
-                raise ValueError(f"reserved llama.cpp option: {key}")
-            if isinstance(value, bool):
-                if value:
-                    command.append(f"--{key}")
-            else:
-                command.extend([f"--{key}", str(value)])
-        self.model = model
-        self.process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-        )
-        assert self.process.stdout is not None
-        self._reader = asyncio.create_task(self._read_logs(self.process.stdout))
-        deadline = time.monotonic() + self.config.get("startup_timeout", 300)
         try:
-            async with httpx.AsyncClient(timeout=2) as client:
+            directory = runtime_dir()
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._socket_dir = tempfile.TemporaryDirectory(prefix="w-", dir=directory)
+            self.socket_path = Path(self._socket_dir.name) / "llama.sock"
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            command = [
+                self.config.get(
+                    "server_command", os.environ.get("LLAMA_SERVER_COMMAND", "llama-server")
+                ),
+                "--model",
+                str(path),
+                "--alias",
+                model,
+                "--host",
+                str(self.socket_path),
+                "--parallel",
+                "1",
+                "--fit",
+                "on",
+                "--fit-target",
+                str(self.config.get("fit_target_mib", 1024)),
+                "--no-ui",
+                "--verbosity",
+                "4",
+            ]
+            # Do not set gpu-layers: llama.cpp must fit it to currently free VRAM.
+            options = record.get("options", {})
+            for key, value in options.items():
+                normalized_key = key.replace("_", "-")
+                if normalized_key in {"gpu-layers", "n-gpu-layers"}:
+                    logger.warning(
+                        "Ignoring model %s option %s=%s; GPU layers are managed by automatic fitting",
+                        model,
+                        key,
+                        value,
+                    )
+                    continue
+                if normalized_key in {
+                    "model",
+                    "alias",
+                    "host",
+                    "port",
+                    "parallel",
+                    "fit",
+                    "sleep-idle-seconds",
+                }:
+                    raise ValueError(f"reserved llama.cpp option: {key}")
+                if isinstance(value, bool):
+                    if value:
+                        command.append(f"--{key}")
+                else:
+                    command.extend([f"--{key}", str(value)])
+            self.model = model
+            self.process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+            )
+            assert self.process.stdout is not None
+            self._reader = asyncio.create_task(self._read_logs(self.process.stdout))
+            deadline = time.monotonic() + self.config.get("startup_timeout", 300)
+            async with httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(uds=str(self.socket_path)),
+                timeout=2,
+            ) as client:
                 while time.monotonic() < deadline:
                     if self.process.returncode is not None:
                         raise RuntimeError(
@@ -163,7 +167,7 @@ class Runtime:
 
     @property
     def base_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+        return "http://localhost"
 
     async def stop(self) -> None:
         process = self.process
@@ -180,7 +184,11 @@ class Runtime:
         except Exception:
             logger.exception("Failed to read llama.cpp logs")
         finally:
-            self.process = self.model = self.port = self._reader = None
+            self.process = self.model = self._reader = None
+            self.socket_path = None
+            if self._socket_dir:
+                self._socket_dir.cleanup()
+                self._socket_dir = None
             self.warning = self.offloaded_layers = self.total_layers = None
             self._loaded_spec = None
 

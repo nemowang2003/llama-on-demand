@@ -22,4 +22,4 @@ repos:
     rev: v0.0.88
     hooks:
       - id: ty
-        args: [--locked, --extra, proxy]
+        args: [--locked]

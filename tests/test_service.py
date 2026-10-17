@@ -4,7 +4,6 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -20,6 +19,7 @@ class FakeRuntime:
         self.last_used = time.monotonic()
         self.warning = "cpu-offload; gpu-layers=10/33"
         self.base_url = "http://fake"
+        self.socket_path = "/fake.sock"
         self.calls = []
 
     async def start(self, model):
@@ -140,26 +140,6 @@ class ModelTests(unittest.TestCase):
         match = OFFLOAD.search("load_tensors: offloaded 10/33 layers to GPU")
         assert match is not None
         self.assertEqual(match.groups(), ("10", "33"))
-
-
-class HeaderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_warning_is_bound_to_response(self):
-        from llama_on_demand.litellm_callback import callback
-
-        response = SimpleNamespace(
-            _hidden_params={
-                "additional_headers": {
-                    "llm_provider-x-local-llm-warning": "cpu-offload; gpu-layers=10/33"
-                }
-            }
-        )
-        self.assertEqual(
-            await callback.async_post_call_response_headers_hook({}, None, response),
-            {"x-local-llm-warning": "cpu-offload; gpu-layers=10/33"},
-        )
-        self.assertEqual(
-            await callback.async_post_call_response_headers_hook({}, None, SimpleNamespace()), {}
-        )
 
 
 class StreamingTests(unittest.IsolatedAsyncioTestCase):

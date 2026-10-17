@@ -306,11 +306,13 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("False", command)
             self.assertNotIn("--mlock", command)
             self.assertEqual(command[command.index("--ctx-size") + 1], "4096")
+            self.assertNotIn("--port", command)
+            self.assertTrue(command[command.index("--host") + 1].endswith(".sock"))
             for key in extra_options or {}:
                 self.assertNotIn(f"--{key}", command)
             self.assertEqual(runtime.model, "new")
             runtime.process = None
-            await runtime.stop()
+            await Runtime.stop(runtime)
 
     async def test_boolean_options_are_flags_and_false_is_omitted(self):
         await self.check_options(Runtime({}))
@@ -324,7 +326,25 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(runtime, "stop", new_callable=AsyncMock) as stop,
         ):
             await self.check_options(runtime)
-        self.assertEqual(stop.await_count, 2)
+        self.assertEqual(stop.await_count, 1)
+
+    async def test_spawn_failure_removes_private_socket_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            runtime = Runtime({})
+            runtime.state_dir = Path(root) / "state"
+            with (
+                patch.dict(os.environ, {"XDG_RUNTIME_DIR": root}),
+                patch("llama_on_demand.runtime.model_path", return_value=(Path("m.gguf"), {})),
+                patch(
+                    "llama_on_demand.runtime.asyncio.create_subprocess_exec",
+                    side_effect=OSError("cannot spawn"),
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "cannot spawn"):
+                    await runtime.start("m")
+            self.assertIsNone(runtime.process)
+            self.assertIsNone(runtime.socket_path)
+            self.assertEqual(list((Path(root) / "llama-on-demand").glob("w-*")), [])
 
     async def test_same_alias_revalidates_source_before_reusing_worker(self):
         runtime = Runtime({})
@@ -357,6 +377,7 @@ class StreamingFailureTests(unittest.IsolatedAsyncioTestCase):
         runtime = SimpleNamespace(
             last_used=0,
             base_url="http://fake",
+            socket_path="/fake.sock",
             warning=None,
             start=AsyncMock(),
             stop=AsyncMock(),
