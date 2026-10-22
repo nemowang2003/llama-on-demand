@@ -338,8 +338,10 @@ packages; llama-server and aria2c must be provided separately, preferably with N
 
 Nix builds resolve the project's `uv.lock` with uv2nix. Python dependencies
 come from that lock; nixpkgs supplies the interpreter,
-system libraries and llama.cpp where applicable. Build backend versions are
-pinned by the `pyproject-build-systems` flake input because uv does not lock them.
+system libraries and llama.cpp where applicable. The `build` dependency group
+locks `uv_build` in `uv.lock`. Nix builds use `--force-pep517` and explicitly
+provide that locked backend instead of uv's bundled version. Other build
+backends come from the `pyproject-build-systems` flake input.
 Package metadata is generated from `pyproject.toml` by pyproject-nix and inherited
 by the CLI, so descriptions and the main program do not need separate Nix definitions.
 

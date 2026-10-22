@@ -34,8 +34,11 @@
       (pkgs.callPackage pyproject-nix.build.packages {inherit python;}).overrideScope (pkgs.lib.composeManyExtensions [
         pyproject-build-systems.overlays.wheel
         overlay
-        (_final: prev: {
+        (final: prev: {
           llama-on-demand = prev.llama-on-demand.overrideAttrs (old: {
+            # Use the backend from uv.lock instead of uv's bundled version.
+            uvBuildFlags = (old.uvBuildFlags or []) ++ ["--force-pep517"];
+            nativeBuildInputs = (old.nativeBuildInputs or []) ++ final.resolveBuildSystem {uv-build = [];};
             meta = (old.meta or {}) // project.renderers.meta {};
           });
         })
