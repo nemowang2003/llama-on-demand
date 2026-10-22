@@ -20,7 +20,7 @@
     pyproject-build-systems,
     ...
   }: let
-    systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin"];
+    systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin"];
     each-system = nixpkgs.lib.genAttrs systems;
     project = pyproject-nix.lib.project.loadPyproject {projectRoot = self;};
     workspace = uv2nix.lib.workspace.loadWorkspace {workspaceRoot = self;};
