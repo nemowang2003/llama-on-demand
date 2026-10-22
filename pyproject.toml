@@ -15,12 +15,12 @@ dependencies = [
 llama-on-demand = "llama_on_demand:main"
 
 [build-system]
-requires = ["uv_build>=0.11.28,<0.13"]
+requires = ["uv_build>=0.13.5,<0.14"]
 build-backend = "uv_build"
 
 [dependency-groups]
 build = [
-    "uv-build>=0.11.28,<0.13",
+    "uv_build>=0.13.5,<0.14",
 ]
 dev = [
     "pre-commit>=4.6.2",
