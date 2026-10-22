@@ -19,8 +19,9 @@ Loading failures return an actionable error and release the queue.
 
 ## API formats
 
-All formats are available on the same listener, share the same registered model
-aliases and FIFO queue, and use the same `LLAMA_ON_DEMAND_API_KEY`:
+All formats are available on the same listener and share the same registered model
+aliases and FIFO queue. With authentication enabled (the default), they use the
+same `LLAMA_ON_DEMAND_API_KEY`:
 
 | Format | Endpoint | Authentication |
 | --- | --- | --- |
@@ -75,6 +76,55 @@ a suitable model and chat template; set the model's `options.jinja = true` for
 llama.cpp's documented Anthropic tool support. See the
 [llama.cpp server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 
+## Inbound authentication
+
+The llama-on-demand setting `auth_required` defaults to `true`. Startup requires
+a nonempty `LLAMA_ON_DEMAND_API_KEY`, and `/status`, `/v1/models` and all inference
+and token-counting endpoints require a matching Bearer token or `x-api-key`.
+`/health` remains public. This is a gateway setting, not a llama.cpp model option.
+
+To explicitly disable inbound API key authentication, put this at the top level
+of llama-on-demand's TOML configuration, outside any model table:
+
+```toml
+auth_required = false
+```
+
+In Home Manager, use the existing `settings` configuration entrypoint:
+
+```nix
+services.llama-on-demand = {
+  enable = true;
+  host = "127.0.0.1";
+  settings.auth_required = false;
+  # environment-file can be omitted (default: null).
+};
+```
+
+In this mode no server key or authentication header is needed. Authentication
+headers are ignored even if a server key is still set. Use this mode for an
+entrance whose access scope is controlled by the deployment, such as a loopback
+listener published through Tailscale Serve to trusted tailnet devices with access
+policies. Every caller able to reach the API can use it. The service never infers
+an exemption from source IPs, proxy headers or Tailscale identity headers; only
+the explicit boolean setting controls authentication. Restart the service after
+changing it. Non-boolean values are rejected at startup.
+
+`environment-file` remains available in either mode for other variables, such as
+Hugging Face credentials or runtime overrides. With authentication enabled, the
+key may be supplied through that file or another service environment mechanism;
+omitting the file does not bypass the runtime key check. Keep secrets outside
+the Nix store.
+
+The built-in `status` command sends a Bearer token only when the key is present in
+its environment. With authentication disabled, it needs neither a key nor the
+server's configuration file:
+
+```sh
+llama-on-demand status
+curl "$(llama-on-demand endpoint)/v1/models"
+```
+
 ## Home Manager user service
 
 The flake exports `homeManagerModules.default` and package builders:
@@ -97,7 +147,7 @@ The flake exports `homeManagerModules.default` and package builders:
 }
 ```
 
-Create the environment file outside the Nix store, mode 0600, containing a random
+For the default authenticated setup, create the environment file outside the Nix store, mode 0600, containing a random
 `LLAMA_ON_DEMAND_API_KEY=sk-…`. Clients use that key. The module generates TOML
 and starts only `llama-on-demand.service`. It restarts failed services and kills
 the worker process group on service stop. The user manager must be running;
@@ -146,7 +196,7 @@ For a Unix API listener instead of TCP:
 services.llama-on-demand.socket = "%t/llama-on-demand/api.sock";
 ```
 
-The API socket is mode 0600 and still requires the API key. Its endpoint file
+The API socket is mode 0600 and follows the same `auth_required` setting. Its endpoint file
 contains `unix:///absolute/path/to/api.sock`; `status` also understands this.
 Keep Unix socket paths short (typically under 108 bytes including the terminating
 byte). Existing files and listeners are never replaced. If a crash leaves a stale
@@ -262,10 +312,10 @@ global queue. Only registered local GGUF files are loaded; unknown aliases retur
 Requests never trigger downloads or accept arbitrary filesystem paths as model
 names. Files are never automatically deleted.
 
-The authenticated `GET /v1/models` and `models list` CLI read the complete current
+`GET /v1/models` (authenticated by default) and the `models list` CLI read the complete current
 catalog without loading weights.
 
-Runtime settings: `idle_seconds` (30), `fit_target_mib` (1024),
+Runtime settings: `auth_required` (true), `idle_seconds` (30), `fit_target_mib` (1024),
 `startup_timeout` (300), `request_timeout` (3600), `queue_timeout` (3600),
 `max_queue` (128), `server_command` (packaged llama-server). The queue is FIFO
 and shared across models, held until an entire response finishes. A disconnected
@@ -305,6 +355,8 @@ use `uv sync` / `uv run` for development, and `nix build` for deployment.
 `llama-on-demand` expose the direct service CLI; `cuda` selects the NVIDIA build
 on x86_64 Linux. The `cli` check runs the installed application and imports its
 modules, while `unit` runs the tests against the installed Python environment.
+On Linux, `home-manager` also checks optional environment files and generated
+authentication settings without building or running a model.
 Checks provide a CA bundle inside the Nix sandbox.
 
 ## Development checks

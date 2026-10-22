@@ -61,8 +61,11 @@ class Scheduler:
 def create_app(config: dict, runtime=None):
     runtime = runtime or Runtime(config)
     scheduler = Scheduler(config, runtime)
-    key = os.environ.get("LLAMA_ON_DEMAND_API_KEY")
-    if not key:
+    auth_required = config.get("auth_required", True)
+    if not isinstance(auth_required, bool):
+        raise ValueError("auth_required must be a boolean")
+    key = os.environ.get("LLAMA_ON_DEMAND_API_KEY", "")
+    if auth_required and not key:
         raise ValueError("set LLAMA_ON_DEMAND_API_KEY before starting the service")
 
     @asynccontextmanager
@@ -103,6 +106,8 @@ def create_app(config: dict, runtime=None):
         return JSONResponse(content, status_code=error.status_code, headers=error.headers)
 
     def authorize(request):
+        if not auth_required:
+            return
         bearer = hmac.compare_digest(
             request.headers.get("authorization", "").encode(), f"Bearer {key}".encode()
         )

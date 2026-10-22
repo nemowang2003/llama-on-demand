@@ -58,6 +58,14 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
                 output, error = await asyncio.wait_for(query.communicate(), 10)
                 self.assertEqual(query.returncode, 0, error.decode())
                 self.assertFalse(json.loads(output)["running"])
+                without_key = dict(env)
+                without_key.pop("LLAMA_ON_DEMAND_API_KEY")
+                query = await self.cli(without_key, "status", "--endpoint-file", str(endpoint))
+                _, error = await asyncio.wait_for(query.communicate(), 10)
+                self.assertEqual(query.returncode, 1)
+                self.assertIn("401", error.decode())
+                self.assertNotIn("KeyError", error.decode())
+                self.assertNotIn("Traceback", error.decode())
                 query = await self.cli(env, "endpoint", "--endpoint-file", str(endpoint))
                 output, error = await asyncio.wait_for(query.communicate(), 10)
                 self.assertEqual(query.returncode, 0, error.decode())
@@ -73,6 +81,51 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(process.communicate(), 10)
             self.assertEqual(process.returncode, 0)
             self.assertFalse(endpoint.exists())
+
+    async def test_no_key_cli_starts_and_status_discovers_tcp_and_unix_listeners(self):
+        for use_socket in (False, True):
+            with self.subTest(unix=use_socket), tempfile.TemporaryDirectory() as root:
+                directory = Path(root)
+                config = directory / "config.toml"
+                config.write_text("auth_required = false\n")
+                endpoint = directory / "endpoint"
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+                    notify.bind(str(directory / "notify.sock"))
+                    notify.setblocking(False)
+                    env = {
+                        **os.environ,
+                        "XDG_CONFIG_HOME": root,
+                        "XDG_RUNTIME_DIR": root,
+                        "NOTIFY_SOCKET": str(directory / "notify.sock"),
+                    }
+                    env.pop("LLAMA_ON_DEMAND_API_KEY", None)
+                    env.pop("LLAMA_ON_DEMAND_CONFIG", None)
+                    listen_args = ["--uds", str(directory / "api.sock")] if use_socket else []
+                    process = await self.cli(
+                        env,
+                        "--config",
+                        str(config),
+                        "serve",
+                        "--endpoint-file",
+                        str(endpoint),
+                        *listen_args,
+                    )
+                    try:
+                        ready = await asyncio.wait_for(
+                            asyncio.get_running_loop().sock_recv(notify, 1024), 10
+                        )
+                        self.assertEqual(ready, b"READY=1")
+                        # status works without a key or the server's config file.
+                        query = await self.cli(env, "status", "--endpoint-file", str(endpoint))
+                        output, error = await asyncio.wait_for(query.communicate(), 10)
+                        self.assertEqual(query.returncode, 0, error.decode())
+                        self.assertFalse(json.loads(output)["running"])
+                    finally:
+                        if process.returncode is None:
+                            process.send_signal(signal.SIGTERM)
+                        await asyncio.wait_for(process.communicate(), 10)
+                    self.assertEqual(process.returncode, 0)
+                    self.assertFalse(endpoint.exists())
 
     async def test_failed_bind_does_not_publish_an_endpoint_or_signal_readiness(self):
         with tempfile.TemporaryDirectory() as root, socket.socket() as occupied:

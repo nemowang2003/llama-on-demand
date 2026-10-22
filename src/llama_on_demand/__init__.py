@@ -76,12 +76,14 @@ def main():
                 url = "http://localhost"
             else:
                 transport, url = None, endpoint
-            with httpx.Client(transport=transport, trust_env=False) as client:
-                result = client.get(
-                    url.rstrip("/") + "/status",
-                    headers={"Authorization": "Bearer " + os.environ["LLAMA_ON_DEMAND_API_KEY"]},
-                )
-            result.raise_for_status()
+            key = os.environ.get("LLAMA_ON_DEMAND_API_KEY")
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+            try:
+                with httpx.Client(transport=transport, trust_env=False) as client:
+                    result = client.get(url.rstrip("/") + "/status", headers=headers)
+                result.raise_for_status()
+            except httpx.HTTPError as error:
+                raise RuntimeError(str(error)) from error
             print(json.dumps(result.json(), indent=2))
         elif args.model_command == "list":
             print(json.dumps(models.catalog(config), indent=2))

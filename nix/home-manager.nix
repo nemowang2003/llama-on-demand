@@ -43,13 +43,14 @@ in {
       description = "File containing the actual HTTP URL or unix:// socket address. Published atomically before systemd readiness, removed on shutdown. %t expands to the user runtime directory.";
     };
     environment-file = lib.mkOption {
-      type = lib.types.str;
-      description = "Runtime environment file containing LLAMA_ON_DEMAND_API_KEY; never put the key in Nix settings.";
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Optional runtime environment file for LLAMA_ON_DEMAND_API_KEY or other variables. Required authentication still needs a key at runtime; never put secrets in Nix settings.";
     };
     settings = lib.mkOption {
       type = toml.type;
       default = {};
-      description = "Runtime settings, including idle_seconds, fit_target_mib and queue_timeout.";
+      description = "Runtime settings, including auth_required (default true), idle_seconds, fit_target_mib and queue_timeout.";
     };
     models = lib.mkOption {
       type = toml.type;
@@ -77,27 +78,30 @@ in {
     xdg.configFile."llama-on-demand/config.toml".source = model-config;
     systemd.user.services.llama-on-demand = {
       Unit.Description = "On-demand llama.cpp models and global inference queue";
-      Service = {
-        Type = "notify";
-        NotifyAccess = "main";
-        EnvironmentFile = cfg.environment-file;
-        ExecStart =
-          "${cfg.package}/bin/llama-on-demand --config ${model-config} serve "
-          + lib.escapeShellArgs (["--endpoint-file" cfg.endpoint-file]
-            ++ (
-              if cfg.socket != null
-              then ["--uds" cfg.socket]
-              else ["--host" cfg.host "--port" (toString cfg.port)]
-            ));
-        Restart = "on-failure";
-        RestartSec = 3;
-        KillMode = "control-group";
-        TimeoutStartSec = 90;
-        TimeoutStopSec = 45;
-        UMask = "0077";
-        RuntimeDirectory = "llama-on-demand";
-        RuntimeDirectoryMode = "0700";
-      };
+      Service =
+        {
+          Type = "notify";
+          NotifyAccess = "main";
+          ExecStart =
+            "${cfg.package}/bin/llama-on-demand --config ${model-config} serve "
+            + lib.escapeShellArgs (["--endpoint-file" cfg.endpoint-file]
+              ++ (
+                if cfg.socket != null
+                then ["--uds" cfg.socket]
+                else ["--host" cfg.host "--port" (toString cfg.port)]
+              ));
+          Restart = "on-failure";
+          RestartSec = 3;
+          KillMode = "control-group";
+          TimeoutStartSec = 90;
+          TimeoutStopSec = 45;
+          UMask = "0077";
+          RuntimeDirectory = "llama-on-demand";
+          RuntimeDirectoryMode = "0700";
+        }
+        // lib.optionalAttrs (cfg.environment-file != null) {
+          EnvironmentFile = cfg.environment-file;
+        };
       Install.WantedBy = ["default.target"];
     };
   };

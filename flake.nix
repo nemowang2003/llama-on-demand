@@ -86,19 +86,37 @@
     checks = each-system (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       environment = self.packages.${system}.default.python-env;
-    in {
-      cli = pkgs.runCommand "llama-on-demand-cli" {} ''
-        ${self.packages.${system}.default}/bin/llama-on-demand --help
-        ${environment}/bin/python -c 'from llama_on_demand.service import create_app; from llama_on_demand.runtime import Runtime'
-        touch "$out"
-      '';
-      unit = pkgs.runCommand "llama-on-demand-unit" {nativeBuildInputs = [pkgs.aria2];} ''
-        export PYTHONDONTWRITEBYTECODE=1
-        export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-        ${environment}/bin/python -m unittest discover -s ${self}/tests
-        touch "$out"
-      '';
-    });
+    in
+      {
+        cli = pkgs.runCommand "llama-on-demand-cli" {} ''
+          ${self.packages.${system}.default}/bin/llama-on-demand --help
+          ${environment}/bin/python -c 'from llama_on_demand.service import create_app; from llama_on_demand.runtime import Runtime'
+          touch "$out"
+        '';
+        unit = pkgs.runCommand "llama-on-demand-unit" {nativeBuildInputs = [pkgs.aria2];} ''
+          export PYTHONDONTWRITEBYTECODE=1
+          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          ${environment}/bin/python -m unittest discover -s ${self}/tests
+          touch "$out"
+        '';
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        home-manager = let
+          configs = import ./tests/home-manager.nix {
+            inherit pkgs;
+            module = self.homeManagerModules.default;
+          };
+        in
+          pkgs.runCommand "llama-on-demand-home-manager" {} ''
+            ${environment}/bin/python - <<'PY'
+            import tomllib
+            from pathlib import Path
+            assert tomllib.loads(Path("${configs.unauthenticated}").read_text())["auth_required"] is False
+            assert tomllib.loads(Path("${configs.authenticated}").read_text())["auth_required"] is True
+            PY
+            touch "$out"
+          '';
+      });
     apps = each-system (system: let
       app = {
         type = "app";
